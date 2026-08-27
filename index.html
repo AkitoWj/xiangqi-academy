@@ -23,11 +23,64 @@
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
-        #loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: #87CEEB; z-index: 50; font-size: 2rem; color: white; font-weight: 900; }
+        #loading { 
+            position: absolute; 
+            inset: 0; 
+            display: flex; 
+            flex-direction: column;
+            align-items: center; 
+            justify-content: center; 
+            background: #87CEEB; 
+            z-index: 50; 
+            font-size: 2rem; 
+            color: white; 
+            font-weight: 900; 
+            gap: 1rem;
+            transition: opacity 0.5s ease;
+        }
+        #loading.hidden { 
+            opacity: 0; 
+            pointer-events: none;
+        }
+        #loading .spinner {
+            width: 60px;
+            height: 60px;
+            border: 6px solid rgba(255,255,255,0.3);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        #loading .sub-text {
+            font-size: 1rem;
+            font-weight: 400;
+            opacity: 0.8;
+        }
+        #loading .retry-btn {
+            margin-top: 0.5rem;
+            padding: 0.5rem 2rem;
+            background: rgba(255,255,255,0.2);
+            border: 2px solid white;
+            border-radius: 12px;
+            color: white;
+            font-size: 1rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        #loading .retry-btn:hover {
+            background: rgba(255,255,255,0.3);
+        }
+        .hidden { display: none !important; }
     </style>
 </head>
 <body class="flex flex-col md:flex-row h-screen w-screen">
-    <div id="loading">🦉 象棋小學堂載入中...</div>
+    <div id="loading">
+        <div class="spinner"></div>
+        <div>🦉 象棋小學堂載入中...</div>
+        <div class="sub-text">準備棋盤與棋子</div>
+        <button id="retry-loading" class="retry-btn hidden">🔄 重新載入</button>
+    </div>
     <div id="game-area" class="relative flex-grow h-[55%] md:h-full w-full md:w-auto">
         <div id="canvas-container" class="absolute inset-0 w-full h-full"></div>
         <div class="absolute top-4 left-4 right-4 flex justify-between items-start pointer-events-none z-10">
@@ -62,6 +115,36 @@
     </div>
 
 <script type="module">
+// ==================== 載入管理 ====================
+const loadingEl = document.getElementById('loading');
+const retryBtn = document.getElementById('retry-loading');
+let loadTimeout = null;
+let loadStartTime = Date.now();
+
+function updateLoading(text, subText = '') {
+    const main = loadingEl.querySelector('div:nth-child(2)');
+    const sub = loadingEl.querySelector('.sub-text');
+    if (main) main.textContent = text || '🦉 象棋小學堂載入中...';
+    if (sub) sub.textContent = subText || '';
+}
+
+function showRetry() {
+    retryBtn.classList.remove('hidden');
+    retryBtn.textContent = '🔄 重新載入';
+}
+
+// 設定載入超時（15秒後顯示重試按鈕）
+loadTimeout = setTimeout(() => {
+    if (!loadingEl.classList.contains('hidden')) {
+        updateLoading('⚠️ 載入時間較長', '請檢查網路連線，或點擊重新載入');
+        showRetry();
+    }
+}, 15000);
+
+retryBtn.addEventListener('click', () => {
+    location.reload();
+});
+
 // ==================== 核心常數與型別 ====================
 const BOARD = { WIDTH: 9, HEIGHT: 10, GRID_SIZE: 10, PIECE_RADIUS: 4, PIECE_HEIGHT: 2.5 };
 const PIECE_NAMES = {
@@ -264,7 +347,15 @@ class GreedyAI {
 
 // ==================== 音效 ====================
 class SoundManager {
-  constructor() { try { this.ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch { this.fallback = true; } }
+  constructor() { 
+    this.fallback = true;
+    try { 
+      this.ctx = new (window.AudioContext || window.webkitAudioContext)(); 
+      this.fallback = false;
+    } catch { 
+      this.fallback = true; 
+    }
+  }
   async play(type) {
     if (this.fallback || !this.ctx) return;
     if (this.ctx.state === 'suspended') try { await this.ctx.resume(); } catch { return; }
@@ -276,14 +367,16 @@ class SoundManager {
     } catch (e) { console.error('音效錯誤', e); }
   }
   tone(start, end, dur, type, delay = 0) {
-    const osc = this.ctx.createOscillator(), gain = this.ctx.createGain();
-    osc.type = type;
-    osc.frequency.setValueAtTime(start, this.ctx.currentTime + delay);
-    osc.frequency.exponentialRampToValueAtTime(end, this.ctx.currentTime + delay + dur);
-    gain.gain.setValueAtTime(0.3, this.ctx.currentTime + delay);
-    gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + delay + dur);
-    osc.connect(gain); gain.connect(this.ctx.destination);
-    osc.start(this.ctx.currentTime + delay); osc.stop(this.ctx.currentTime + delay + dur);
+    try {
+      const osc = this.ctx.createOscillator(), gain = this.ctx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(start, this.ctx.currentTime + delay);
+      osc.frequency.exponentialRampToValueAtTime(end, this.ctx.currentTime + delay + dur);
+      gain.gain.setValueAtTime(0.3, this.ctx.currentTime + delay);
+      gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + delay + dur);
+      osc.connect(gain); gain.connect(this.ctx.destination);
+      osc.start(this.ctx.currentTime + delay); osc.stop(this.ctx.currentTime + delay + dur);
+    } catch (e) { /* 忽略音效錯誤 */ }
   }
 }
 
@@ -310,11 +403,12 @@ class SceneManager {
     this.setCamera(config.playerColor);
     this.disposables = [];
     this.setupLights(); this.setupClouds();
-    window.addEventListener('resize', () => {
+    this.resizeHandler = () => {
       const a = config.container.clientWidth / config.container.clientHeight;
       this.camera.aspect = a; this.camera.updateProjectionMatrix();
       this.renderer.setSize(config.container.clientWidth, config.container.clientHeight);
-    });
+    };
+    window.addEventListener('resize', this.resizeHandler);
   }
   setCamera(color) {
     if (color === 'red') { this.camera.position.set(0, 75, -90); this.controls.target.set(0, 0, 10); }
@@ -333,9 +427,24 @@ class SceneManager {
       this.scene.add(cloud); this.disposables.push(cloud);
     }
   }
-  startLoop(cb) { const loop = () => { this.animId = requestAnimationFrame(loop); this.controls.update(); cb(); this.renderer.render(this.scene, this.camera); }; loop(); }
+  startLoop(cb) { 
+    const loop = () => { 
+      this.animId = requestAnimationFrame(loop); 
+      this.controls.update(); 
+      cb(); 
+      this.renderer.render(this.scene, this.camera); 
+    }; 
+    loop(); 
+  }
   add(obj) { this.scene.add(obj); this.disposables.push(obj); }
-  dispose() { if (this.animId) cancelAnimationFrame(this.animId); this.disposables.forEach(o => { this.scene.remove(o); if (o.geometry) o.geometry.dispose(); if (o.material) { Array.isArray(o.material) ? o.material.forEach(m => m.dispose()) : o.material.dispose(); } }); this.renderer.dispose(); this.controls.dispose(); if (this.renderer.domElement.parentElement) this.renderer.domElement.parentElement.removeChild(this.renderer.domElement); }
+  dispose() { 
+    if (this.animId) cancelAnimationFrame(this.animId); 
+    window.removeEventListener('resize', this.resizeHandler);
+    this.disposables.forEach(o => { this.scene.remove(o); if (o.geometry) o.geometry.dispose(); if (o.material) { Array.isArray(o.material) ? o.material.forEach(m => m.dispose()) : o.material.dispose(); } }); 
+    this.renderer.dispose(); 
+    this.controls.dispose(); 
+    if (this.renderer.domElement.parentElement) this.renderer.domElement.parentElement.removeChild(this.renderer.domElement); 
+  }
 }
 
 class BoardRenderer {
@@ -444,6 +553,7 @@ class XiangqiAcademy {
     this.isProcessing = false;
     this.currentStep = 0;
     this.scene = null; this.board = null; this.pieces = null; this.indicators = null; this.anim = null; this.sound = null;
+    this.isReady = false;
     this.initUI();
   }
 
@@ -488,9 +598,8 @@ class XiangqiAcademy {
     const container = document.getElementById('canvas-container');
     const raycaster = new THREE.Raycaster(), mouse = new THREE.Vector2();
     let downPos = { x: 0, y: 0 };
-    container.addEventListener('pointerdown', (e) => { downPos = { x: e.clientX, y: e.clientY }; });
-    container.addEventListener('pointerup', (e) => {
-      if (Math.hypot(e.clientX - downPos.x, e.clientY - downPos.y) > 10) return;
+    const handler = (e) => {
+      if (!this.isReady) return;
       if (this.isAIEnabled && this.gameState.currentTurn !== this.playerColor) return;
       if (this.isProcessing) return;
       const rect = this.scene.renderer.domElement.getBoundingClientRect();
@@ -510,6 +619,11 @@ class XiangqiAcademy {
         while (obj.parent && obj.parent !== this.scene.scene) obj = obj.parent;
         if (obj.userData.pieceId) this.selectPiece(obj.userData.pieceId);
       } else { this.deselect(); }
+    };
+    container.addEventListener('pointerdown', (e) => { downPos = { x: e.clientX, y: e.clientY }; });
+    container.addEventListener('pointerup', (e) => {
+      if (Math.hypot(e.clientX - downPos.x, e.clientY - downPos.y) > 10) return;
+      handler(e);
     });
   }
 
@@ -644,32 +758,71 @@ class XiangqiAcademy {
   }
 
   async start() {
-    // 初始化 3D 場景（第一步就需要顯示棋盤）
-    this.init3D();
-    this.loadStep(0);
-    // 隱藏載入畫面
-    setTimeout(() => { this.els.loading.classList.add('hidden'); }, 500);
+    try {
+      updateLoading('🦉 象棋小學堂載入中...', '正在初始化 3D 場景...');
+      
+      // 初始化 3D 場景
+      this.init3D();
+      
+      // 載入第一步教學
+      this.loadStep(0);
+      
+      // 標記為就緒
+      this.isReady = true;
+      
+      // 隱藏載入畫面
+      setTimeout(() => {
+        loadingEl.classList.add('hidden');
+        if (loadTimeout) clearTimeout(loadTimeout);
+      }, 300);
+      
+    } catch (error) {
+      console.error('啟動錯誤:', error);
+      updateLoading('⚠️ 載入失敗', '請點擊下方按鈕重新載入');
+      showRetry();
+    }
   }
 
   dispose() { this.scene?.dispose(); }
 }
 
-const app = new XiangqiAcademy();
-window.addEventListener('load', () => app.start());
-window.addEventListener('beforeunload', () => app.dispose());
+// ==================== 啟動應用 ====================
+// 確保 DOM 完全載入後再啟動
+function bootstrapApp() {
+  const app = new XiangqiAcademy();
+  window.__app = app; // 方便除錯
+  
+  // 延遲啟動，確保所有 DOM 元素都已渲染
+  setTimeout(() => {
+    app.start().catch(err => {
+      console.error('啟動失敗:', err);
+      updateLoading('⚠️ 啟動失敗', '請重新整理頁面');
+      showRetry();
+    });
+  }, 100);
+  
+  window.addEventListener('beforeunload', () => app.dispose());
+}
 
-// GitHub Pages / CDN 載入失敗時，不要讓使用者只看到一片空白。
+// DOM 載入完成後啟動
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', bootstrapApp);
+} else {
+  bootstrapApp();
+}
+
+// 全局錯誤處理
 window.addEventListener('error', (event) => {
+  console.error('全局錯誤:', event.message || event);
   if (event.target && event.target.tagName === 'SCRIPT') {
-    const loading = document.getElementById('loading');
-    if (loading) {
-      loading.classList.remove('hidden');
-      loading.textContent = '⚠️ 遊戲資源載入失敗，請重新整理頁面。';
-    }
+    updateLoading('⚠️ 資源載入失敗', '請檢查網路連線後重新載入');
+    showRetry();
   }
 });
+
 window.addEventListener('unhandledrejection', (event) => {
   console.error('未處理的 Promise 錯誤:', event.reason);
+  // 不要顯示給使用者，只記錄日誌
 });
 </script>
 </body>
