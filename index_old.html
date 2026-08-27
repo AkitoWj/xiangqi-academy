@@ -4,16 +4,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>3D 象棋小學堂</title>
+    <script src="https://cdn.tailwindcss.com"></script>
     <script type="importmap">
     {
         "imports": {
-            "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
         }
     }
     </script>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700;900&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="./styles.css">
     <style>
         body { margin: 0; background-color: #87CEEB; font-family: 'Noto Sans TC', sans-serif; touch-action: none; overflow: hidden; }
         @keyframes float { 0% { transform: translateY(0px); } 50% { transform: translateY(-5px); } 100% { transform: translateY(0px); } }
@@ -657,20 +657,6 @@ class XiangqiAcademy {
 const app = new XiangqiAcademy();
 window.addEventListener('load', () => app.start());
 window.addEventListener('beforeunload', () => app.dispose());
-
-// GitHub Pages / CDN 載入失敗時，不要讓使用者只看到一片空白。
-window.addEventListener('error', (event) => {
-  if (event.target && event.target.tagName === 'SCRIPT') {
-    const loading = document.getElementById('loading');
-    if (loading) {
-      loading.classList.remove('hidden');
-      loading.textContent = '⚠️ 遊戲資源載入失敗，請重新整理頁面。';
-    }
-  }
-});
-window.addEventListener('unhandledrejection', (event) => {
-  console.error('未處理的 Promise 錯誤:', event.reason);
-});
 </script>
 </body>
 </html>
