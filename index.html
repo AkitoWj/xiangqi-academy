@@ -15,7 +15,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700;900&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="./styles.css">
     <style>
-        body { margin: 0; background-color: #87CEEB; font-family: 'Noto Sans TC', sans-serif; touch-action: none; overflow: hidden; }
+        body { margin: 0; background-color: #87CEEB; font-family: 'Noto Sans TC', sans-serif; touch-action: none; overflow: hidden; user-select: none; -webkit-user-select: none; }
         @keyframes float { 0% { transform: translateY(0px); } 50% { transform: translateY(-5px); } 100% { transform: translateY(0px); } }
         .dialog-box { animation: float 3s ease-in-out infinite; }
         @keyframes pulse-glow { 0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); } 70% { box-shadow: 0 0 0 15px rgba(16, 185, 129, 0); } 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); } }
@@ -72,6 +72,8 @@
             background: rgba(255,255,255,0.3);
         }
         .hidden { display: none !important; }
+        /* 確保 canvas 可以接收指標事件 */
+        #canvas-container canvas { touch-action: none; cursor: pointer; }
     </style>
 </head>
 <body class="flex flex-col md:flex-row h-screen w-screen">
@@ -119,7 +121,6 @@
 const loadingEl = document.getElementById('loading');
 const retryBtn = document.getElementById('retry-loading');
 let loadTimeout = null;
-let loadStartTime = Date.now();
 
 function updateLoading(text, subText = '') {
     const main = loadingEl.querySelector('div:nth-child(2)');
@@ -364,7 +365,7 @@ class SoundManager {
       else if (type === 'capture') this.tone(200, 100, 0.15, 'square');
       else if (type === 'error') this.tone(150, 100, 0.2, 'sawtooth');
       else if (type === 'success') { [523.25, 659.25, 783.99].forEach((f, i) => this.tone(f, f, 0.3, 'sine', i * 0.1)); }
-    } catch (e) { console.error('音效錯誤', e); }
+    } catch (e) { /* 忽略音效錯誤 */ }
   }
   tone(start, end, dur, type, delay = 0) {
     try {
@@ -468,48 +469,137 @@ class BoardRenderer {
 }
 
 class PieceRenderer {
-  constructor(scene) { this.group = new THREE.Group(); scene.add(this.group); this.meshes = new Map(); this.pool = new Map(); this.pool.set('body', new THREE.CylinderGeometry(BOARD.PIECE_RADIUS, BOARD.PIECE_RADIUS, BOARD.PIECE_HEIGHT, 32)); }
+  constructor(scene) { 
+    this.group = new THREE.Group(); 
+    scene.add(this.group); 
+    this.meshes = new Map(); 
+    this.pool = new Map(); 
+    this.pool.set('body', new THREE.CylinderGeometry(BOARD.PIECE_RADIUS, BOARD.PIECE_RADIUS, BOARD.PIECE_HEIGHT, 32)); 
+    // 儲存所有可點擊的 mesh 用於 raycasting
+    this.clickableMeshes = [];
+  }
   renderPiece(piece) {
     const existing = this.meshes.get(piece.id);
-    if (existing) { this.updatePos(existing.mesh, piece.position); return; }
-    const mesh = this.createMesh(piece); this.group.add(mesh); this.meshes.set(piece.id, { id: piece.id, mesh, piece });
+    if (existing) { 
+      this.updatePos(existing.mesh, piece.position); 
+      return existing.mesh;
+    }
+    const mesh = this.createMesh(piece); 
+    this.group.add(mesh); 
+    this.meshes.set(piece.id, { id: piece.id, mesh, piece });
+    // 收集所有可點擊的子 mesh
+    mesh.traverse(child => {
+      if (child.isMesh) {
+        child.userData.pieceId = piece.id;
+        this.clickableMeshes.push(child);
+      }
+    });
+    return mesh;
   }
   createMesh(piece) {
     const g = new THREE.Group(), char = PIECE_NAMES[piece.type][piece.color], isRed = piece.color === 'red';
     const body = new THREE.Mesh(this.pool.get('body').clone(), new THREE.MeshLambertMaterial({ color: '#ffedd5' }));
-    body.castShadow = true; body.receiveShadow = true; g.add(body);
+    body.castShadow = true; body.receiveShadow = true; 
+    body.userData.pieceId = piece.id;
+    g.add(body);
     const ring = new THREE.Mesh(new THREE.RingGeometry(BOARD.PIECE_RADIUS - 1.2, BOARD.PIECE_RADIUS - 0.8, 32), new THREE.MeshBasicMaterial({ color: isRed ? '#dc2626' : '#1f2937', side: THREE.DoubleSide }));
-    ring.rotation.x = -Math.PI / 2; ring.position.y = BOARD.PIECE_HEIGHT / 2 + 0.01; g.add(ring);
+    ring.rotation.x = -Math.PI / 2; ring.position.y = BOARD.PIECE_HEIGHT / 2 + 0.01; 
+    ring.userData.pieceId = piece.id;
+    g.add(ring);
     const c = document.createElement('canvas'); c.width = 128; c.height = 128; const ctx = c.getContext('2d');
     ctx.font = 'bold 80px "Noto Sans TC"'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = isRed ? '#dc2626' : '#1f2937'; ctx.fillText(char, 64, 64);
-    const tex = new THREE.CanvasTexture(c); const textMesh = new THREE.Mesh(new THREE.PlaneGeometry(BOARD.PIECE_RADIUS * 1.5, BOARD.PIECE_RADIUS * 1.5), new THREE.MeshBasicMaterial({ map: tex, transparent: true }));
-    textMesh.rotation.x = -Math.PI / 2; textMesh.position.y = BOARD.PIECE_HEIGHT / 2 + 0.02; textMesh.rotation.z = isRed ? Math.PI : 0; g.add(textMesh);
-    this.updatePos(g, piece.position); g.userData = { pieceId: piece.id, type: piece.type, color: piece.color }; return g;
+    const tex = new THREE.CanvasTexture(c); 
+    const textMesh = new THREE.Mesh(new THREE.PlaneGeometry(BOARD.PIECE_RADIUS * 1.5, BOARD.PIECE_RADIUS * 1.5), new THREE.MeshBasicMaterial({ map: tex, transparent: true }));
+    textMesh.rotation.x = -Math.PI / 2; textMesh.position.y = BOARD.PIECE_HEIGHT / 2 + 0.02; textMesh.rotation.z = isRed ? Math.PI : 0;
+    textMesh.userData.pieceId = piece.id;
+    g.add(textMesh);
+    this.updatePos(g, piece.position); 
+    g.userData = { pieceId: piece.id, type: piece.type, color: piece.color };
+    // 確保 group 本身也有 pieceId
+    g.userData.pieceId = piece.id;
+    return g;
   }
   updatePos(g, pos) { const wp = gridToWorld(pos); g.position.set(wp.x, BOARD.PIECE_HEIGHT / 2, wp.z); }
-  removePiece(id) { const e = this.meshes.get(id); if (e) { this.group.remove(e.mesh); this.disposeMesh(e.mesh); this.meshes.delete(id); } }
-  clearPieces() { for (const [id, pm] of this.meshes) { this.group.remove(pm.mesh); this.disposeMesh(pm.mesh); } this.meshes.clear(); }
-  disposeMesh(g) { g.traverse(c => { if (c.geometry && !this.pool.has(c.geometry.uuid)) c.geometry.dispose(); if (c.material) Array.isArray(c.material) ? c.material.forEach(m => m.dispose()) : c.material.dispose(); }); }
-  getMeshes() { return Array.from(this.meshes.values()).map(pm => pm.mesh); }
+  removePiece(id) { 
+    const e = this.meshes.get(id); 
+    if (e) { 
+      // 從 clickableMeshes 移除
+      e.mesh.traverse(child => {
+        if (child.isMesh) {
+          const idx = this.clickableMeshes.indexOf(child);
+          if (idx > -1) this.clickableMeshes.splice(idx, 1);
+        }
+      });
+      this.group.remove(e.mesh); 
+      this.disposeMesh(e.mesh); 
+      this.meshes.delete(id); 
+    } 
+  }
+  clearPieces() { 
+    this.clickableMeshes = [];
+    for (const [id, pm] of this.meshes) { 
+      this.group.remove(pm.mesh); 
+      this.disposeMesh(pm.mesh); 
+    } 
+    this.meshes.clear(); 
+  }
+  disposeMesh(g) { 
+    g.traverse(c => { 
+      if (c.geometry && !this.pool.has(c.geometry.uuid)) c.geometry.dispose(); 
+      if (c.material) Array.isArray(c.material) ? c.material.forEach(m => m.dispose()) : c.material.dispose(); 
+    }); 
+  }
+  getMeshes() { return this.clickableMeshes; }
+  getPieceMeshes() { return Array.from(this.meshes.values()).map(pm => pm.mesh); }
 }
 
 class IndicatorRenderer {
-  constructor(scene) { this.group = new THREE.Group(); scene.add(this.group); this.indicators = []; }
+  constructor(scene) { 
+    this.group = new THREE.Group(); 
+    scene.add(this.group); 
+    this.indicators = [];
+    // 儲存可點擊的 indicator meshes
+    this.clickableIndicators = [];
+  }
   showSelection(pos) {
-    this.clear(); const wp = gridToWorld(pos);
+    this.clear(); 
+    const wp = gridToWorld(pos);
     const ring = new THREE.Mesh(new THREE.RingGeometry(BOARD.PIECE_RADIUS + 0.5, BOARD.PIECE_RADIUS + 1.5, 32), new THREE.MeshBasicMaterial({ color: 0xfacc15, side: THREE.DoubleSide }));
-    ring.rotation.x = -Math.PI / 2; ring.position.set(wp.x, 0.2, wp.z); this.group.add(ring); this.indicators.push(ring);
+    ring.rotation.x = -Math.PI / 2; ring.position.set(wp.x, 0.2, wp.z); 
+    this.group.add(ring); 
+    this.indicators.push(ring);
   }
   showValidMoves(positions, board) {
     for (const pos of positions) {
-      const wp = gridToWorld(pos); const hasPiece = board[pos.y][pos.x];
+      const wp = gridToWorld(pos); 
+      const hasPiece = board[pos.y][pos.x];
       const ind = new THREE.Mesh(new THREE.BoxGeometry(4, 0.5, 4), new THREE.MeshBasicMaterial({ color: hasPiece ? 0xef4444 : 0x4ade80, transparent: true, opacity: 0.7 }));
-      ind.position.set(wp.x, 0.3, wp.z); ind.userData = { isIndicator: true, gridX: pos.x, gridY: pos.y }; this.group.add(ind); this.indicators.push(ind);
-      if (hasPiece) { const tr = new THREE.Mesh(new THREE.RingGeometry(BOARD.PIECE_RADIUS - 0.5, BOARD.PIECE_RADIUS + 0.5, 32), new THREE.MeshBasicMaterial({ color: 0xff0000, side: THREE.DoubleSide })); tr.rotation.x = -Math.PI / 2; tr.position.set(wp.x, BOARD.PIECE_HEIGHT + 0.5, wp.z); this.group.add(tr); this.indicators.push(tr); }
+      ind.position.set(wp.x, 0.3, wp.z); 
+      ind.userData = { isIndicator: true, gridX: pos.x, gridY: pos.y }; 
+      this.group.add(ind); 
+      this.indicators.push(ind);
+      this.clickableIndicators.push(ind);
+      if (hasPiece) { 
+        const tr = new THREE.Mesh(new THREE.RingGeometry(BOARD.PIECE_RADIUS - 0.5, BOARD.PIECE_RADIUS + 0.5, 32), new THREE.MeshBasicMaterial({ color: 0xff0000, side: THREE.DoubleSide })); 
+        tr.rotation.x = -Math.PI / 2; tr.position.set(wp.x, BOARD.PIECE_HEIGHT + 0.5, wp.z); 
+        tr.userData = { isIndicator: true, gridX: pos.x, gridY: pos.y };
+        this.group.add(tr); 
+        this.indicators.push(tr);
+        this.clickableIndicators.push(tr);
+      }
     }
   }
-  clear() { this.indicators.forEach(i => { i.geometry?.dispose(); if (i.material) Array.isArray(i.material) ? i.material.forEach(m => m.dispose()) : i.material.dispose(); this.group.remove(i); }); this.indicators = []; this.group.clear(); }
-  getMeshes() { return this.indicators; }
+  clear() { 
+    this.clickableIndicators = [];
+    this.indicators.forEach(i => { 
+      i.geometry?.dispose(); 
+      if (i.material) Array.isArray(i.material) ? i.material.forEach(m => m.dispose()) : i.material.dispose(); 
+      this.group.remove(i); 
+    }); 
+    this.indicators = []; 
+    this.group.clear(); 
+  }
+  getMeshes() { return this.clickableIndicators; }
 }
 
 class AnimationManager {
@@ -552,7 +642,12 @@ class XiangqiAcademy {
     this.aiPlayer = null;
     this.isProcessing = false;
     this.currentStep = 0;
-    this.scene = null; this.board = null; this.pieces = null; this.indicators = null; this.anim = null; this.sound = null;
+    this.scene = null; 
+    this.board = null; 
+    this.pieces = null; 
+    this.indicators = null; 
+    this.anim = null; 
+    this.sound = null;
     this.isReady = false;
     this.initUI();
   }
@@ -596,132 +691,329 @@ class XiangqiAcademy {
 
   setupInteraction() {
     const container = document.getElementById('canvas-container');
-    const raycaster = new THREE.Raycaster(), mouse = new THREE.Vector2();
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
     let downPos = { x: 0, y: 0 };
-    const handler = (e) => {
+    
+    const handlePointerDown = (e) => {
+      downPos = { x: e.clientX, y: e.clientY };
+    };
+    
+    const handlePointerUp = (e) => {
+      // 檢查是否是點擊（不是拖曳）
+      if (Math.hypot(e.clientX - downPos.x, e.clientY - downPos.y) > 10) return;
+      
+      // 檢查遊戲是否可操作
       if (!this.isReady) return;
-      if (this.isAIEnabled && this.gameState.currentTurn !== this.playerColor) return;
-      if (this.isProcessing) return;
+      if (this.isAIEnabled && this.gameState.currentTurn !== this.playerColor) {
+        this.showHint('現在是電腦的回合，請稍候...');
+        return;
+      }
+      if (this.isProcessing) {
+        this.showHint('請稍候，正在處理...');
+        return;
+      }
+      
+      // 計算滑鼠位置
       const rect = this.scene.renderer.domElement.getBoundingClientRect();
       mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.setFromCamera(mouse, this.scene.camera);
+      
+      // 如果有選中的棋子，先檢查是否點擊了 indicator（目標位置）
       if (this.selectedPieceId) {
-        const hits = raycaster.intersectObjects(this.indicators.getMeshes());
-        if (hits.length > 0 && hits[0].object.userData.isIndicator) {
-          const { gridX, gridY } = hits[0].object.userData;
-          this.executeMove({ x: gridX, y: gridY }); return;
+        const indicatorMeshes = this.indicators.getMeshes();
+        if (indicatorMeshes.length > 0) {
+          const hits = raycaster.intersectObjects(indicatorMeshes);
+          if (hits.length > 0) {
+            let obj = hits[0].object;
+            // 向上查找 userData
+            while (obj && !obj.userData?.isIndicator && obj.parent) {
+              obj = obj.parent;
+            }
+            if (obj && obj.userData?.isIndicator && obj.userData.gridX !== undefined) {
+              this.executeMove({ x: obj.userData.gridX, y: obj.userData.gridY });
+              return;
+            }
+          }
         }
+        // 如果點擊的不是有效目標，取消選取
+        this.deselect();
+        return;
       }
-      const hits = raycaster.intersectObjects(this.pieces.getMeshes(), true);
+      
+      // 沒有選中的棋子，檢查是否點擊了棋子
+      const pieceMeshes = this.pieces.getMeshes();
+      if (pieceMeshes.length === 0) return;
+      
+      const hits = raycaster.intersectObjects(pieceMeshes);
       if (hits.length > 0) {
         let obj = hits[0].object;
-        while (obj.parent && obj.parent !== this.scene.scene) obj = obj.parent;
-        if (obj.userData.pieceId) this.selectPiece(obj.userData.pieceId);
-      } else { this.deselect(); }
+        // 向上查找 userData.pieceId
+        while (obj && !obj.userData?.pieceId && obj.parent) {
+          obj = obj.parent;
+        }
+        if (obj && obj.userData?.pieceId) {
+          this.selectPiece(obj.userData.pieceId);
+        }
+      } else {
+        this.deselect();
+      }
     };
-    container.addEventListener('pointerdown', (e) => { downPos = { x: e.clientX, y: e.clientY }; });
-    container.addEventListener('pointerup', (e) => {
-      if (Math.hypot(e.clientX - downPos.x, e.clientY - downPos.y) > 10) return;
-      handler(e);
-    });
+    
+    container.addEventListener('pointerdown', handlePointerDown);
+    container.addEventListener('pointerup', handlePointerUp);
+    
+    // 儲存清理函數
+    this._cleanupInteraction = () => {
+      container.removeEventListener('pointerdown', handlePointerDown);
+      container.removeEventListener('pointerup', handlePointerUp);
+    };
   }
 
   selectPiece(id) {
     const piece = this.findPiece(id);
-    if (!piece) return;
-    if (!this.isAIEnabled && TUTORIAL_STEPS[this.currentStep].allowedPiece && piece.type !== TUTORIAL_STEPS[this.currentStep].allowedPiece) {
-      this.showHint(`這關要練習「${PIECE_NAMES[TUTORIAL_STEPS[this.currentStep].allowedPiece].red}」喔！`); this.sound.play('error'); return;
+    if (!piece) {
+      console.warn('找不到棋子:', id);
+      return;
     }
-    if (piece.color !== this.gameState.currentTurn) { this.showHint(`現在是 ${this.gameState.currentTurn === 'red' ? '紅' : '黑'} 方回合`); this.sound.play('error'); return; }
+    
+    // 教學模式：檢查是否允許選取這個棋子
+    if (!this.isAIEnabled && TUTORIAL_STEPS[this.currentStep].allowedPiece) {
+      if (piece.type !== TUTORIAL_STEPS[this.currentStep].allowedPiece) {
+        const name = PIECE_NAMES[TUTORIAL_STEPS[this.currentStep].allowedPiece]?.red || '這個棋子';
+        this.showHint(`這關要練習「${name}」喔！`);
+        this.sound.play('error');
+        return;
+      }
+    }
+    
+    // 檢查是否輪到這個棋子的一方
+    if (piece.color !== this.gameState.currentTurn) {
+      this.showHint(`現在是 ${this.gameState.currentTurn === 'red' ? '紅' : '黑'} 方的回合`);
+      this.sound.play('error');
+      return;
+    }
+    
     this.selectedPieceId = id;
     this.indicators.showSelection(piece.position);
-    this.indicators.showValidMoves(getValidMoves(this.gameState.board, piece), this.gameState.board);
+    const validMoves = getValidMoves(this.gameState.board, piece);
+    this.indicators.showValidMoves(validMoves, this.gameState.board);
     this.sound.play('move');
+    
+    // 顯示提示
+    if (validMoves.length === 0) {
+      this.showHint('這個棋子沒有可以走的地方');
+    }
   }
 
-  deselect() { this.selectedPieceId = null; this.indicators.clear(); }
+  deselect() { 
+    this.selectedPieceId = null; 
+    this.indicators.clear(); 
+  }
 
   async executeMove(to) {
     if (!this.selectedPieceId) return;
     const piece = this.findPiece(this.selectedPieceId);
     if (!piece) return;
+    
     this.isProcessing = true;
     const result = makeMove(this.gameState, piece.position, to);
-    if (!result.ok) { this.showHint(result.error); this.sound.play('error'); this.isProcessing = false; return; }
+    
+    if (!result.ok) {
+      this.showHint(result.error);
+      this.sound.play('error');
+      this.isProcessing = false;
+      this.deselect();
+      return;
+    }
+    
     const newState = result.value;
     const move = newState.moveHistory[newState.moveHistory.length - 1];
+    
+    // 教學模式：檢查移動是否正確
     if (!this.isAIEnabled && TUTORIAL_STEPS[this.currentStep].allowedPiece) {
       const valid = TUTORIAL_STEPS[this.currentStep].checkMove(move.piece, move.captured !== null);
-      if (!valid) { this.showHint('再試試看！' + TUTORIAL_STEPS[this.currentStep].hint); this.sound.play('error'); this.isProcessing = false; return; }
+      if (!valid) {
+        this.showHint('再試試看！' + TUTORIAL_STEPS[this.currentStep].hint);
+        this.sound.play('error');
+        this.isProcessing = false;
+        this.deselect();
+        return;
+      }
     }
+    
+    // 執行動畫
     await this.animateMove(piece, to, move.captured !== null);
-    this.gameState = newState; this.deselect(); this.updatePieces();
+    
+    // 更新狀態
+    this.gameState = newState;
+    this.deselect();
+    this.updatePieces();
     this.sound.play(move.captured ? 'capture' : 'move');
-    if (isGameOver(newState)) { this.handleGameOver(); this.isProcessing = false; return; }
+    
+    // 檢查遊戲是否結束
+    if (isGameOver(newState)) {
+      this.handleGameOver();
+      this.isProcessing = false;
+      return;
+    }
+    
     this.updateUI();
-    if (this.isAIEnabled && this.gameState.currentTurn !== this.playerColor) setTimeout(() => this.makeAIMove(), 800);
+    
+    // AI 回合
+    if (this.isAIEnabled && this.gameState.currentTurn !== this.playerColor) {
+      setTimeout(() => this.makeAIMove(), 600);
+    }
+    
     this.isProcessing = false;
   }
 
   async makeAIMove() {
     if (!this.aiPlayer || this.gameState.currentTurn === this.playerColor) return;
-    this.isProcessing = true; this.updateDialog('🤖 電腦思考中...', '讓我想想看...');
+    if (this.isProcessing) return;
+    
+    this.isProcessing = true;
+    this.updateDialog('🤖 電腦思考中...', '讓我想想看...');
+    
     const move = await this.aiPlayer.selectMove(this.gameState);
-    if (!move) { this.isProcessing = false; return; }
+    if (!move) { 
+      this.isProcessing = false; 
+      return; 
+    }
+    
     const result = makeMove(this.gameState, move.from, move.to);
-    if (!result.ok) { this.isProcessing = false; return; }
+    if (!result.ok) { 
+      this.isProcessing = false; 
+      return; 
+    }
+    
     const newState = result.value;
     await this.animateMove(move.piece, move.to, move.captured !== null);
-    this.gameState = newState; this.updatePieces();
+    
+    this.gameState = newState;
+    this.updatePieces();
     this.sound.play(move.captured ? 'capture' : 'move');
-    if (isGameOver(newState)) this.handleGameOver(); else this.updateUI();
+    
+    if (isGameOver(newState)) {
+      this.handleGameOver();
+    } else {
+      this.updateUI();
+    }
+    
     this.isProcessing = false;
   }
 
   animateMove(piece, to, isCapture) {
     return new Promise((resolve) => {
-      const mesh = this.findMesh(piece.position);
-      if (!mesh) { resolve(); return; }
-      const tp = gridToWorld(to); tp.y = 2.5;
-      this.anim.animate({ mesh, target: new THREE.Vector3(tp.x, tp.y, tp.z), duration: 300, onComplete: () => { if (isCapture) { const cap = this.gameState.board[to.y][to.x]; if (cap) this.pieces.removePiece(cap.id); } resolve(); } });
+      const mesh = this.findMesh(piece);
+      if (!mesh) { 
+        resolve(); 
+        return; 
+      }
+      const tp = gridToWorld(to); 
+      tp.y = BOARD.PIECE_HEIGHT / 2;
+      const startPos = mesh.position.clone();
+      // 稍微抬高再落下
+      const targetPos = new THREE.Vector3(tp.x, tp.y, tp.z);
+      
+      this.anim.animate({ 
+        mesh, 
+        target: targetPos, 
+        duration: 350, 
+        onComplete: () => { 
+          if (isCapture) { 
+            // 移除被吃的棋子
+            const cap = this.gameState.board[to.y][to.x];
+            if (cap && cap.id !== piece.id) {
+              this.pieces.removePiece(cap.id);
+            }
+          }
+          resolve(); 
+        } 
+      });
     });
   }
 
-  findPiece(id) { for (let y = 0; y < 10; y++) for (let x = 0; x < 9; x++) if (this.gameState.board[y][x]?.id === id) return this.gameState.board[y][x]; return null; }
-  findMesh(pos) { const piece = this.gameState.board[pos.y][pos.x]; if (!piece) return null; for (const m of this.pieces.getMeshes()) if (m.userData.pieceId === piece.id) return m; return null; }
+  findPiece(id) { 
+    for (let y = 0; y < 10; y++) {
+      for (let x = 0; x < 9; x++) {
+        if (this.gameState.board[y][x]?.id === id) {
+          return this.gameState.board[y][x];
+        }
+      }
+    }
+    return null; 
+  }
+  
+  findMesh(piece) {
+    if (!piece) return null;
+    // 從 PieceRenderer 中找到對應的 mesh
+    const entry = this.pieces.meshes.get(piece.id);
+    return entry ? entry.mesh : null;
+  }
 
   updatePieces() {
     this.pieces.clearPieces();
-    for (let y = 0; y < 10; y++) for (let x = 0; x < 9; x++) if (this.gameState.board[y][x]) this.pieces.renderPiece(this.gameState.board[y][x]);
+    for (let y = 0; y < 10; y++) {
+      for (let x = 0; x < 9; x++) {
+        if (this.gameState.board[y][x]) {
+          this.pieces.renderPiece(this.gameState.board[y][x]);
+        }
+      }
+    }
   }
 
   handleGameOver() {
     const winner = this.gameState.winner;
     if (winner) {
       const isWin = winner === this.playerColor;
-      this.updateDialog(isWin ? '🏆 挑戰成功！' : '😭 挑戰失敗', isWin ? '太棒了！你吃掉了電腦的老大！' : '你的老大被吃掉了！點擊重新開始！');
+      this.updateDialog(
+        isWin ? '🏆 挑戰成功！' : '😭 挑戰失敗', 
+        isWin ? '太棒了！你吃掉了電腦的老大！' : '你的老大被吃掉了！點擊重新開始！'
+      );
       this.sound.play('success');
-    } else { this.updateDialog('🤝 和局', '雙方都無法移動了！'); }
-    this.els.next.textContent = '重新開始 🔄'; this.els.next.classList.remove('hidden');
+    } else { 
+      this.updateDialog('🤝 和局', '雙方都無法移動了！'); 
+    }
+    this.els.next.textContent = '重新開始 🔄'; 
+    this.els.next.classList.remove('hidden');
   }
 
   updateUI() {
     if (!this.isAIEnabled) return;
     const isPlayer = this.gameState.currentTurn === this.playerColor;
-    this.updateDialog(isPlayer ? '⚔️ 你的回合' : '🤖 電腦思考中...', isPlayer ? `換你了！你是${this.playerColor === 'red' ? '紅' : '黑'}方。` : '請稍候...');
+    this.updateDialog(
+      isPlayer ? '⚔️ 你的回合' : '🤖 電腦思考中...', 
+      isPlayer ? `換你了！你是${this.playerColor === 'red' ? '紅' : '黑'}方。` : '請稍候...'
+    );
   }
 
-  updateDialog(title, text) { this.els.title.textContent = title; this.els.text.innerHTML = text; }
-  showHint(msg) { this.els.hint.textContent = msg; this.els.hint.classList.remove('hidden'); setTimeout(() => this.els.hint.classList.add('hidden'), 3000); }
+  updateDialog(title, text) { 
+    this.els.title.textContent = title; 
+    this.els.text.innerHTML = text; 
+  }
+  
+  showHint(msg) { 
+    this.els.hint.textContent = msg; 
+    this.els.hint.classList.remove('hidden'); 
+    clearTimeout(this._hintTimeout);
+    this._hintTimeout = setTimeout(() => this.els.hint.classList.add('hidden'), 3000); 
+  }
 
   loadStep(index) {
     this.currentStep = index;
     const step = TUTORIAL_STEPS[index];
-    this.isAIEnabled = false; this.selectedPieceId = null; if (this.indicators) this.indicators.clear();
+    this.isAIEnabled = false; 
+    this.selectedPieceId = null; 
+    if (this.indicators) this.indicators.clear();
     this.updateDialog(step.title, step.text);
-    this.els.selector.value = index; this.els.selector.classList.remove('hidden');
-    this.els.sandbox.classList.remove('hidden'); this.els.diff.classList.add('hidden'); this.els.color.classList.add('hidden');
+    this.els.selector.value = index; 
+    this.els.selector.classList.remove('hidden');
+    this.els.sandbox.classList.remove('hidden'); 
+    this.els.diff.classList.add('hidden'); 
+    this.els.color.classList.add('hidden');
+    
     let board = createEmptyBoard();
     for (const [type, color, x, y] of step.setup) {
       const piece = { id: `${color}_${type}_${x}_${y}`, type, color, position: { x, y } };
@@ -729,31 +1021,65 @@ class XiangqiAcademy {
     }
     this.gameState = { ...this.gameState, board, currentTurn: 'red', status: 'playing', winner: null, moveHistory: [] };
     if (this.pieces) this.updatePieces();
+    
     this.els.prev.classList.toggle('hidden', index === 0);
-    if (index === TUTORIAL_STEPS.length - 1) { this.els.next.classList.add('hidden'); this.els.sandbox.classList.add('glow-btn'); }
-    else { this.els.next.textContent = index === 0 ? '開始上課 👉' : '下一步 👉'; this.els.next.classList.remove('hidden'); this.els.next.disabled = step.allowedPiece ? true : false; }
+    if (index === TUTORIAL_STEPS.length - 1) { 
+      this.els.next.classList.add('hidden'); 
+      this.els.sandbox.classList.add('glow-btn'); 
+    } else { 
+      this.els.next.textContent = index === 0 ? '開始上課 👉' : '下一步 👉'; 
+      this.els.next.classList.remove('hidden'); 
+      this.els.next.disabled = step.allowedPiece ? true : false; 
+    }
   }
 
   handleNext() {
-    if (this.isAIEnabled) { this.startSandbox(this.playerColor); return; }
-    if (this.currentStep >= TUTORIAL_STEPS.length - 1) { this.showDiff(); return; }
+    if (this.isAIEnabled) { 
+      this.startSandbox(this.playerColor); 
+      return; 
+    }
+    if (this.currentStep >= TUTORIAL_STEPS.length - 1) { 
+      this.showDiff(); 
+      return; 
+    }
     this.loadStep(this.currentStep + 1);
   }
+  
   handlePrev() {
-    if (this.isAIEnabled) { this.loadStep(this.currentStep); return; }
+    if (this.isAIEnabled) { 
+      this.loadStep(this.currentStep); 
+      return; 
+    }
     if (this.currentStep > 0) this.loadStep(this.currentStep - 1);
   }
 
-  showDiff() { this.els.sandbox.classList.add('hidden'); this.els.diff.classList.remove('hidden'); this.updateDialog('🧠 選擇難度', '請選擇電腦的難度。<br><b>簡單模式</b>：電腦只會亂走，不太聰明。<br><b>挑戰模式</b>：電腦會想辦法吃掉你的大棋子！'); this.els.selector.classList.add('hidden'); this.els.next.classList.add('hidden'); this.els.prev.classList.remove('hidden'); this.els.prev.textContent = '🔙 回到教學'; }
-  showColor() { this.els.diff.classList.add('hidden'); this.els.color.classList.remove('hidden'); this.updateDialog('⚔️ 選擇陣營', `太棒了，你選擇了「${this.aiDifficulty === 'easy' ? '簡單' : '挑戰'}模式」。<br>現在請選擇你要當「紅軍(先走)」還是「黑軍(後走)」？`); }
+  showDiff() { 
+    this.els.sandbox.classList.add('hidden'); 
+    this.els.diff.classList.remove('hidden'); 
+    this.updateDialog('🧠 選擇難度', '請選擇電腦的難度。<br><b>簡單模式</b>：電腦只會亂走，不太聰明。<br><b>挑戰模式</b>：電腦會想辦法吃掉你的大棋子！'); 
+    this.els.selector.classList.add('hidden'); 
+    this.els.next.classList.add('hidden'); 
+    this.els.prev.classList.remove('hidden'); 
+    this.els.prev.textContent = '🔙 回到教學'; 
+  }
+  
+  showColor() { 
+    this.els.diff.classList.add('hidden'); 
+    this.els.color.classList.remove('hidden'); 
+    this.updateDialog('⚔️ 選擇陣營', `太棒了，你選擇了「${this.aiDifficulty === 'easy' ? '簡單' : '挑戰'}模式」。<br>現在請選擇你要當「紅軍(先走)」還是「黑軍(後走)」？`); 
+  }
 
   startSandbox(color) {
-    this.playerColor = color; this.isAIEnabled = true;
+    this.playerColor = color; 
+    this.isAIEnabled = true;
     this.aiPlayer = this.aiDifficulty === 'easy' ? new RandomAI(color === 'red' ? 'black' : 'red') : new GreedyAI(color === 'red' ? 'black' : 'red');
     this.init3D();
-    this.gameState = createInitialState(); this.updatePieces();
+    this.gameState = createInitialState(); 
+    this.updatePieces();
     this.updateDialog('⚔️ 與電腦對戰', `你是${color === 'red' ? '紅' : '黑'}方。${color === 'red' ? '紅方先走，點擊開始。' : '紅方先走，請稍候...'}`);
-    this.els.next.textContent = '重新開始 🔄'; this.els.next.classList.remove('hidden'); this.els.color.classList.remove('hidden');
+    this.els.next.textContent = '重新開始 🔄'; 
+    this.els.next.classList.remove('hidden'); 
+    this.els.color.classList.remove('hidden');
     if (color === 'black') setTimeout(() => this.makeAIMove(), 1000);
   }
 
@@ -776,6 +1102,9 @@ class XiangqiAcademy {
         if (loadTimeout) clearTimeout(loadTimeout);
       }, 300);
       
+      console.log('✅ 象棋小學堂已啟動！');
+      console.log('💡 提示：點擊棋子選擇，再點擊綠色方格移動');
+      
     } catch (error) {
       console.error('啟動錯誤:', error);
       updateLoading('⚠️ 載入失敗', '請點擊下方按鈕重新載入');
@@ -783,16 +1112,17 @@ class XiangqiAcademy {
     }
   }
 
-  dispose() { this.scene?.dispose(); }
+  dispose() { 
+    this.scene?.dispose();
+    if (this._cleanupInteraction) this._cleanupInteraction();
+  }
 }
 
 // ==================== 啟動應用 ====================
-// 確保 DOM 完全載入後再啟動
 function bootstrapApp() {
   const app = new XiangqiAcademy();
-  window.__app = app; // 方便除錯
+  window.__app = app;
   
-  // 延遲啟動，確保所有 DOM 元素都已渲染
   setTimeout(() => {
     app.start().catch(err => {
       console.error('啟動失敗:', err);
@@ -804,14 +1134,12 @@ function bootstrapApp() {
   window.addEventListener('beforeunload', () => app.dispose());
 }
 
-// DOM 載入完成後啟動
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', bootstrapApp);
 } else {
   bootstrapApp();
 }
 
-// 全局錯誤處理
 window.addEventListener('error', (event) => {
   console.error('全局錯誤:', event.message || event);
   if (event.target && event.target.tagName === 'SCRIPT') {
@@ -822,7 +1150,6 @@ window.addEventListener('error', (event) => {
 
 window.addEventListener('unhandledrejection', (event) => {
   console.error('未處理的 Promise 錯誤:', event.reason);
-  // 不要顯示給使用者，只記錄日誌
 });
 </script>
 </body>
